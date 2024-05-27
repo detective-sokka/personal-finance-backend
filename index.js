@@ -63,6 +63,42 @@ app.post('/users', async (req, res) => {
     });
 });
 
+app.post('/transactions', (req, res) => {
+
+    const { name, amount, type } = req.body; // Add type to the request body (income/expense)
+    if (!name || !amount || !type) 
+    {
+        return res.status(400).send('Name, amount, and type are required');
+    }
+
+    let adjustedAmount = amount;
+
+    if (type === 'expense') 
+    {
+        adjustedAmount = -Math.abs(amount); // Ensure the amount is negative for expenses
+    } 
+    else if (type === 'income') 
+    {
+        adjustedAmount = Math.abs(amount); // Ensure the amount is positive for incomes
+    } 
+    else 
+    {
+        return res.status(400).send('Invalid transaction type');
+    }
+
+    const query = 'INSERT INTO transactions (name, amount) VALUES (?, ?)';
+
+    db.query(query, [name, adjustedAmount], (err, result) => 
+    {
+        if (err) 
+        {
+            console.error('Error executing query:', err.message);
+            return res.status(500).send('Server error');
+        }
+        
+        res.status(201).send({ id: result.insertId, name, amount: adjustedAmount, date: new Date() });
+    });
+});
 
 
 app.listen(PORT, () => {
