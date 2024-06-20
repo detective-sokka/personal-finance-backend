@@ -1,106 +1,149 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const mysql = require('mysql');
-const bcrypt = require('bcrypt');
+const express = require("express");
+const bodyParser = require("body-parser");
+const mongoose = require('mongoose');
+const bcrypt = require("bcrypt");
+const cors = require("cors");
 
 const app = express();
-const PORT = 3000;
+const REACT_PORT = 3000;
+const NODE_PORT = 9001;
+const corsOptions = {
+  origin: "http://localhost:" + REACT_PORT, // Your React app's origin
+  optionsSuccessStatus: 200, // Some legacy browsers choke on 204
+};
+const mongodb_connection_string = "mongodb://localhost:27017/personal-finance-mongodb";
 
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'password',
-    database: 'mydb',
-    multipleStatements: true,
-});
-
-db.connect((err) => {
-    if (err) {
-        throw err;
-    }
-    console.log('MySQL Connected');
-});
+app.use(cors(corsOptions));
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
+// MongoDB connection
+mongoose.connect(mongodb_connection_string, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+
+const db = mongoose.connection;
+
+db.on("error", console.error.bind(console, "connection error:"));
+db.once("open", () => {
+  console.log("Connected to MongoDB");
+});
+
+// User Schema and Model
+const userSchema = new mongoose.Schema({
+  username: String,
+  password: String,
+});
+
+const transactionSchema = new mongoose.Schema({
+  desc: String,
+  amount: Number,
+  type: String,
+  username: String  // Add this field to store the username
+});
+
+const User = mongoose.model("User", userSchema);
+const Transaction = mongoose.model("Transaction", transactionSchema);
+
 // Login route
-app.post('/login', (req, res) => {
-    const { username, password } = req.body;
+app.post("/login", async (req, res) => {
 
-    db.query('SELECT * FROM users WHERE username = ?', [username], async (error, results) => {
-        if (error) {
-            throw error;
-        }
+  console.log("Login called");
+  const { username, password } = req.body;
 
-        if (results.length > 0) {
-            const user = results[0];
-            const match = await bcrypt.compare(password, user.password);
+  try {
+    // Find the user in the database
+    const user = await User.findOne({ username });
 
-            if (match) {
-                res.send('Login successful!');
-            } else {
-                res.status(401).send('Invalid username or password');
-            }
-        } else {
-            res.status(401).send('Invalid username or password');
-        }
-    });
-});
-
-// Create user route
-app.post('/users', async (req, res) => {
-    const { username, password } = req.body;
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    db.query('INSERT INTO users (username, password) VALUES (?, ?)', [username, hashedPassword], (error, results) => {
-        if (error) {
-            throw error;
-        }
-        res.status(201).send('User created successfully');
-    });
-});
-
-app.post('/transactions', (req, res) => {
-
-    const { name, amount, type } = req.body; // Add type to the request body (income/expense)
-    if (!name || !amount || !type) 
+    if (user && (await bcrypt.compare(password, user.password))) 
     {
-        return res.status(400).send('Name, amount, and type are required');
-    }
-
-    let adjustedAmount = amount;
-
-    if (type === 'expense') 
-    {
-        adjustedAmount = -Math.abs(amount); // Ensure the amount is negative for expenses
-    } 
-    else if (type === 'income') 
-    {
-        adjustedAmount = Math.abs(amount); // Ensure the amount is positive for incomes
+      res.json({ success: true, username: user.username });
     } 
     else 
     {
-        return res.status(400).send('Invalid transaction type');
+      res.status(401).json({ success: false, message: "Invalid credentials" });
     }
-
-    const query = 'INSERT INTO transactions (name, amount) VALUES (?, ?)';
-
-    db.query(query, [name, adjustedAmount], (err, result) => 
-    {
-        if (err) 
-        {
-            console.error('Error executing query:', err.message);
-            return res.status(500).send('Server error');
-        }
-        
-        res.status(201).send({ id: result.insertId, name, amount: adjustedAmount, date: new Date() });
-    });
+  } 
+  catch (error) 
+  {
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
 });
 
+// Create user route
+app.post("/users", async (req, res) => {
+  console.log("users called");
+  const { username, password } = req.body;
 
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+  try {
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create new user
+    const newUser = new User({ username, password: hashedPassword });
+    await newUser.save();
+
+    res.status(201).send("User created successfully");
+  } catch (error) {
+    console.error("Error creating user:", error);
+    res.status(500).send("Server error");
+  }
+});
+
+// Create transaction route
+app.post("/transactions", async (req, res) => {
+  const { desc, amount, type } = req.body;
+  console.log("transactions called with request : ", req.body, typeof type);
+
+  if (!desc || !amount || !type) {
+    return res.status(400).send("Desc, amount, and type are required");
+  }
+
+  let adjustedAmount = amount;
+
+  // Check if the type is valid
+  const validTypes = ['EXPENSE', 'INCOME'];
+
+  if (!validTypes.includes(type)) {
+    console.log("Validation failed: Invalid transaction type:", type);
+    return res.status(400).send("Invalid transaction type");
+  }
+
+  if (type === 'EXPENSE') 
+  {
+    adjustedAmount = -Math.abs(amount); // Ensure the amount is negative for expenses
+  } 
+  else if (type === 'INCOME') 
+  {
+    adjustedAmount = Math.abs(amount); // Ensure the amount is positive for incomes
+  }
+
+  try {
+    console.log("Transaction details being saved : ", desc, amount, type)
+    // Create new transaction
+    const newTransaction = new Transaction({
+      desc,
+      amount: adjustedAmount,
+      type,
+    });
+    await newTransaction.save();
+
+    res
+      .status(201)
+      .send({
+        id: newTransaction._id,
+        desc,
+        amount: adjustedAmount,
+        date: newTransaction.date,
+      });
+  } catch (error) {
+    console.error("Error creating transaction:", error);
+    res.status(500).send("Server error");
+  }
+});
+
+app.listen(NODE_PORT, () => {
+  console.log(`Server is running on http://localhost:${NODE_PORT}`);
 });
